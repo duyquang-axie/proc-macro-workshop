@@ -84,27 +84,27 @@ pub fn derive(input: TokenStream) -> TokenStream {
         impl #struct_name {
             pub fn builder() -> #builder_name {
                 #builder_name {
-                    #(#other_ident_fields: None,)*
-                    #(#opt_ident_fields: None,)*
-                    #(#each_ident_fields: Vec::new(),)*
+                    #(#other_ident_fields: std::option::Option::None,)*
+                    #(#opt_ident_fields: std::option::Option::None,)*
+                    #(#each_ident_fields: std::vec::Vec::new(),)*
                 }
             }
         }
 
         pub struct #builder_name {
-            #(#other_ident_fields: Option<#other_ty_fields>,)*
-            #(#opt_ident_fields: Option<#opt_ty_fields>,)*
-            #(#each_ident_fields: Vec<#each_ty_fields>,)*
+            #(#other_ident_fields: std::option::Option<#other_ty_fields>,)*
+            #(#opt_ident_fields: std::option::Option<#opt_ty_fields>,)*
+            #(#each_ident_fields: std::vec::Vec<#each_ty_fields>,)*
         }
 
         impl #builder_name {
             #(fn #other_ident_fields(&mut self, #other_ident_fields: #other_ty_fields) -> &mut Self {
-                self.#other_ident_fields = Some(#other_ident_fields);
+                self.#other_ident_fields = std::option::Option::Some(#other_ident_fields);
                 self
             })*
 
             #(fn #opt_ident_fields(&mut self, #opt_ident_fields: #opt_ty_fields) -> &mut Self {
-                self.#opt_ident_fields = Some(#opt_ident_fields);
+                self.#opt_ident_fields = std::option::Option::Some(#opt_ident_fields);
                 self
             })*
 
@@ -113,7 +113,7 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 self
             })*
 
-            pub fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
+            pub fn build(&mut self) -> std::result::Result<#struct_name, std::boxed::Box<dyn std::error::Error>> {
                 // check all field exist
                 #(if self.#other_ident_fields.is_none() {
                     Err(format!("field {} is empty", stringify!(#other_ident_fields)))?;
