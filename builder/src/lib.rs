@@ -4,6 +4,7 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
+    spanned::Spanned,
     token::Comma,
     Data, DeriveInput, Expr, GenericArgument, Lit, Meta, PathArguments, Type,
 };
@@ -43,10 +44,19 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 let mut is_each = false;
                 if let Some(builder_attr) = builder_attr_opt {
                     if let Meta::List(meta_list) = &builder_attr.meta {
-                        let builder_args: BuilderArgs =
-                            syn::parse2(meta_list.tokens.clone()).unwrap();
+                        let builder_args: syn::Result<BuilderArgs> =
+                            syn::parse2(meta_list.tokens.clone());
 
-                        if let Some(each) = builder_args.each {
+                        if let Err(e) = builder_args {
+                            return syn::Error::new(
+                                meta_list.span(),
+                                "expected `builder(each = \"...\")`",
+                            )
+                            .into_compile_error()
+                            .into();
+                        }
+
+                        if let Some(each) = builder_args.unwrap().each {
                             is_each = true;
                             each_ident_fields.push(quote::format_ident!("{}", each));
                             each_ident_fields_fullname.push(ident);
@@ -153,6 +163,7 @@ impl Parse for BuilderArgs {
 
         for arg in args {
             if let Expr::Assign(assign) = arg {
+                let span = assign.span();
                 if let Expr::Path(path) = *assign.left {
                     if let Some(ident) = path.path.get_ident() {
                         match ident.to_string().as_str() {
@@ -164,7 +175,9 @@ impl Parse for BuilderArgs {
                                     }
                                 }
                             }
-                            _ => {}
+                            _ => {
+                                return Err(syn::Error::new(span, "unrecognized attribute"));
+                            }
                         }
                     }
                 }
