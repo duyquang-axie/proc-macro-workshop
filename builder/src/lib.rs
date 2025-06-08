@@ -1,37 +1,57 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, GenericArgument, PathArguments, Type};
+use syn::{
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
+    token::Comma,
+    Data, DeriveInput, Expr, GenericArgument, Lit, Meta, PathArguments, Type,
+};
 
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     let struct_name = &input.ident;
     let builder_name = quote::format_ident!("{}Builder", struct_name);
-    let mut non_opt_ident_fields = Vec::new();
-    let mut non_opt_ty_fields = Vec::new();
+    let mut other_ident_fields = Vec::new();
+    let mut other_ty_fields = Vec::new();
     let mut opt_ident_fields = Vec::new();
     let mut opt_ty_fields = Vec::new();
+    let mut each_ident_fields = Vec::new();
+    let mut each_ident_fields_fullname = Vec::new();
+    let mut each_ty_fields = Vec::new();
 
     if let Data::Struct(struct_data) = &input.data {
         for field in &struct_data.fields {
             if let Some(ident) = &field.ident {
-                // ident_fields.push(ident);
                 let mut is_opt = false;
                 let mut ty = &field.ty;
-                if let Type::Path(path) = &field.ty {
-                    if path.qself.is_some() {
-                        continue;
-                    }
-                    if let Some(first_segment) = path.path.segments.first() {
-                        if first_segment.ident == "Option" {
-                            is_opt = true;
-                            if let PathArguments::AngleBracketed(args) = &first_segment.arguments {
-                                if let GenericArgument::Type(inner_opt_ty) =
-                                    args.args.first().unwrap()
-                                {
-                                    ty = inner_opt_ty;
-                                }
+
+                if let Some(inner_ty) = get_inner_type(ty, "Option") {
+                    ty = inner_ty;
+                    is_opt = true;
+                }
+
+                // check repetition field
+                let builder_attr_opt = field
+                    .attrs
+                    .iter()
+                    .filter(|&attr| attr.path().is_ident("builder"))
+                    .last();
+
+                let mut is_each = false;
+                if let Some(builder_attr) = builder_attr_opt {
+                    if let Meta::List(meta_list) = &builder_attr.meta {
+                        let builder_args: BuilderArgs =
+                            syn::parse2(meta_list.tokens.clone()).unwrap();
+
+                        if let Some(each) = builder_args.each {
+                            is_each = true;
+                            each_ident_fields.push(quote::format_ident!("{}", each));
+                            each_ident_fields_fullname.push(ident);
+                            if let Some(inner_ty) = get_inner_type(ty, "Vec") {
+                                each_ty_fields.push(inner_ty);
                             }
                         }
                     }
@@ -40,57 +60,117 @@ pub fn derive(input: TokenStream) -> TokenStream {
                 if is_opt {
                     opt_ty_fields.push(ty);
                     opt_ident_fields.push(ident);
+                } else if is_each {
+                    // TODO: handle each field
                 } else {
-                    non_opt_ty_fields.push(ty);
-                    non_opt_ident_fields.push(ident);
+                    other_ty_fields.push(ty);
+                    other_ident_fields.push(ident);
                 }
             }
         }
     }
 
-    let ident_fields = non_opt_ident_fields
-        .iter()
-        .chain(opt_ident_fields.iter())
-        .collect::<Vec<_>>();
-    let ty_fields = non_opt_ty_fields
-        .iter()
-        .chain(opt_ty_fields.iter())
-        .collect::<Vec<_>>();
-
     let expanded = quote! {
         impl #struct_name {
             pub fn builder() -> #builder_name {
                 #builder_name {
-                    #(#ident_fields: None),*
+                    #(#other_ident_fields: None,)*
+                    #(#opt_ident_fields: None,)*
+                    #(#each_ident_fields: Vec::new(),)*
                 }
             }
         }
 
         pub struct #builder_name {
-            #(#ident_fields: Option<#ty_fields>),*
+            #(#other_ident_fields: Option<#other_ty_fields>,)*
+            #(#opt_ident_fields: Option<#opt_ty_fields>,)*
+            #(#each_ident_fields: Vec<#each_ty_fields>,)*
         }
 
         impl #builder_name {
-            #(fn #ident_fields(&mut self, #ident_fields: #ty_fields) -> &mut Self {
-                self.#ident_fields = Some(#ident_fields);
+            #(fn #other_ident_fields(&mut self, #other_ident_fields: #other_ty_fields) -> &mut Self {
+                self.#other_ident_fields = Some(#other_ident_fields);
                 self
             })*
 
+            #(fn #opt_ident_fields(&mut self, #opt_ident_fields: #opt_ty_fields) -> &mut Self {
+                self.#opt_ident_fields = Some(#opt_ident_fields);
+                self
+            })*
+
+            #(fn #each_ident_fields(&mut self, #each_ident_fields: #each_ty_fields) -> &mut Self {
+                self.#each_ident_fields.push(#each_ident_fields);
+                self
+            })*
 
             pub fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
                 // check all field exist
-                #(if self.#non_opt_ident_fields.is_none() {
-                    Err(format!("field {} is empty", stringify!(#non_opt_ident_fields)))?;
+                #(if self.#other_ident_fields.is_none() {
+                    Err(format!("field {} is empty", stringify!(#other_ident_fields)))?;
                 })*
 
 
                 Ok(#struct_name {
-                    #(#non_opt_ident_fields: self.#non_opt_ident_fields.take().unwrap() ,)*
-                    #(#opt_ident_fields: self.#opt_ident_fields.take()),*
+                    #(#other_ident_fields: self.#other_ident_fields.take().unwrap(),)*
+                    #(#opt_ident_fields: self.#opt_ident_fields.take(),)*
+                    #(#each_ident_fields_fullname: self.#each_ident_fields.clone(),)*
                 })
             }
         }
     };
 
     TokenStream::from(expanded)
+}
+
+fn get_inner_type<'a>(ty: &'a Type, parent_ty: &'static str) -> Option<&'a Type> {
+    if let Type::Path(path) = &ty {
+        if path.qself.is_some() {
+            return None;
+        }
+
+        if let Some(first_segment) = path.path.segments.first() {
+            if first_segment.ident == parent_ty {
+                if let PathArguments::AngleBracketed(args) = &first_segment.arguments {
+                    if let GenericArgument::Type(inner_ty) = args.args.first().unwrap() {
+                        return Some(inner_ty);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+// Define a struct to parse the arguments
+struct BuilderArgs {
+    each: Option<String>,
+}
+
+impl Parse for BuilderArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let args = Punctuated::<Expr, Comma>::parse_terminated(input)?;
+        let mut each = None;
+
+        for arg in args {
+            if let Expr::Assign(assign) = arg {
+                if let Expr::Path(path) = *assign.left {
+                    if let Some(ident) = path.path.get_ident() {
+                        match ident.to_string().as_str() {
+                            "each" => {
+                                if let Expr::Lit(lit) = *assign.right {
+                                    if let Lit::Str(lit) = lit.lit {
+                                        // trim quote
+                                        each = Some(lit.value().trim_matches('"').to_string());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(BuilderArgs { each })
+    }
 }
